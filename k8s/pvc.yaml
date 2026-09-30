@@ -1,0 +1,28 @@
+# Persistent storage for the SAM3 video service on NRP (Nautilus).
+# rook-cephfs = ReadWriteMany, shared across pods/replicas.
+# rook-ceph-block = ReadWriteOnce, usually faster for a single replica.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sam3-video-data
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: rook-cephfs
+  resources:
+    requests:
+      storage: 100Gi
+---
+# Hugging Face model/weights cache (facebook/sam3), kept separate from
+# upload/mask data so it survives a `kubectl delete pvc sam3-video-data`.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sam3-hf-cache
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: rook-cephfs
+  resources:
+    requests:
+      storage: 30Gi

@@ -75,6 +75,13 @@ mkdir -p "$DATA_ROOT"
 - **UI:** http://127.0.0.1:8080  
 - **API health:** http://127.0.0.1:2129/health  
 
+### NRP (Kubernetes) deployment
+
+`sam3_video_service` (the GPU backend) can run standalone on NRP/Nautilus,
+with the frontend (Smart Labeler) talking to it over HTTPS. See
+[k8s/README.md](k8s/README.md) for the Dockerfile, manifests, and deploy
+steps.
+
 ### SSH tunnel (cluster / remote GPU)
 
 ```bash
@@ -117,6 +124,7 @@ mkdir -p "$DATA_ROOT"
 | `CHUNK_SIZE` | `1000` | Frames per chunk |
 | `CHUNK_OVERLAP` | `50` | Overlap between chunks |
 | `VENV_DIR` | `./.venv` | Override venv location for `setup_env.sh` |
+| `CORS_ALLOW_ORIGINS` | `*` | Comma-separated origins allowed to call the API (set to the frontend's URL in production) |
 
 ## API (`sam3_video_service`)
 

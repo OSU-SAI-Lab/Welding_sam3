@@ -35,3 +35,6 @@ sam3/
 # Keep README demo video (other mp4s stay ignored)
 !docs/videos/
 !docs/videos/*.mp4
+
+# Real NRP secrets — copy from k8s/secret.example.yaml, never commit
+k8s/secret.yaml
