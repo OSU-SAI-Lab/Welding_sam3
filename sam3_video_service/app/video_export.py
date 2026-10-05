@@ -12,33 +12,62 @@ from PIL import Image, ImageDraw
 from app import storage
 from app.chunk_planner import plan_chunks
 from app.config import DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP
-from app import video_io
 
 
 class ExportError(RuntimeError):
     pass
 
 
-def _mask_paths_for_upload(upload_id: str) -> dict[int, Path]:
+# Per-object overlay colors (RGB), cycled by obj_id.
+OBJECT_COLORS = [
+    (34, 197, 94),  # green
+    (59, 130, 246),  # blue
+    (239, 68, 68),  # red
+    (234, 179, 8),  # yellow
+    (168, 85, 247),  # purple
+    (6, 182, 212),  # cyan
+    (249, 115, 22),  # orange
+    (236, 72, 153),  # pink
+]
+
+
+def object_color(obj_id: int) -> tuple[int, int, int]:
+    return OBJECT_COLORS[(obj_id - 1) % len(OBJECT_COLORS)]
+
+
+# frame_idx -> obj_id -> mask file (.png, or legacy bbox .json)
+MaskMap = dict[int, dict[int, Path]]
+
+
+def _parse_mask_name(path: Path) -> tuple[int, int]:
+    frame_part, obj_part = path.stem.split("_obj", 1)
+    return int(frame_part), int(obj_part)
+
+
+def mask_map_from_dir(masks_dir: Path, out: MaskMap | None = None) -> MaskMap:
+    out = {} if out is None else out
+    if not masks_dir.is_dir():
+        return out
+    for path in sorted(masks_dir.glob("*_obj*.png")):
+        frame_idx, obj_id = _parse_mask_name(path)
+        out.setdefault(frame_idx, {})[obj_id] = path
+    # Fallback: JSON-only masks from older runs (bbox rectangle).
+    for path in sorted(masks_dir.glob("*_obj*.json")):
+        frame_idx, obj_id = _parse_mask_name(path)
+        out.setdefault(frame_idx, {}).setdefault(obj_id, path)
+    return out
+
+
+def _mask_paths_for_upload(upload_id: str) -> MaskMap:
     meta = storage.load_upload_meta(upload_id)
     plans = plan_chunks(
         meta["frame_count"],
         meta.get("chunk_size", DEFAULT_CHUNK_SIZE),
         meta.get("overlap", DEFAULT_OVERLAP),
     )
-    out: dict[int, Path] = {}
+    out: MaskMap = {}
     for plan in plans:
-        masks_dir = storage.chunk_masks_dir(upload_id, plan.chunk_index)
-        if not masks_dir.is_dir():
-            continue
-        for path in sorted(masks_dir.glob("*_obj*.png")):
-            frame_idx = int(path.name.split("_", 1)[0])
-            out[frame_idx] = path
-        # Fallback: JSON-only masks from older runs (bbox rectangle).
-        for path in sorted(masks_dir.glob("*_obj*.json")):
-            frame_idx = int(path.name.split("_", 1)[0])
-            if frame_idx not in out:
-                out[frame_idx] = path
+        mask_map_from_dir(storage.chunk_masks_dir(upload_id, plan.chunk_index), out)
     return out
 
 
@@ -54,11 +83,29 @@ def export_annotated_video(upload_id: str) -> Path:
         raise ExportError("No masks found — track at least one chunk first")
 
     out_path = storage.export_video_path(upload_id)
-    fps = float(meta.get("fps") or 30.0)
-    frame_count = int(meta["frame_count"])
-    overlay_color = (34, 197, 94)  # green RGB
-    alpha = 0.45
+    render_overlay_video(
+        video_path,
+        out_path,
+        fps=float(meta.get("fps") or 30.0),
+        frame_count=int(meta["frame_count"]),
+        mask_map=mask_map,
+    )
 
+    meta["export_path"] = out_path.name
+    meta["export_status"] = "ready"
+    storage.save_upload_meta(upload_id, meta)
+    return out_path
+
+
+def render_overlay_video(
+    video_path: Path,
+    out_path: Path,
+    fps: float,
+    frame_count: int,
+    mask_map: MaskMap,
+    alpha: float = 0.45,
+) -> Path:
+    """Decode every frame, alpha-blend each object's mask in its color, re-encode."""
     with tempfile.TemporaryDirectory(prefix="sam3_export_") as tmp:
         tmp_dir = Path(tmp)
         frames_dir = tmp_dir / "frames"
@@ -74,6 +121,10 @@ def export_annotated_video(upload_id: str) -> Path:
                     "-y",
                     "-i",
                     video_path.as_posix(),
+                    # One image per decoded frame, matching extract_frames indices.
+                    # Default CFR sync duplicates/drops frames on VFR input.
+                    "-vsync",
+                    "0",
                     "-start_number",
                     "0",
                     "-q:v",
@@ -97,16 +148,17 @@ def export_annotated_video(upload_id: str) -> Path:
                 raise ExportError(f"Missing extracted frame {frame_idx}")
 
             base = Image.open(src).convert("RGBA")
-            mask_path = mask_map.get(frame_idx)
-            if mask_path and mask_path.is_file():
+            for obj_id, mask_path in sorted(mask_map.get(frame_idx, {}).items()):
+                if not mask_path.is_file():
+                    continue
                 if mask_path.suffix == ".png":
                     mask = Image.open(mask_path).convert("L").resize(base.size, Image.NEAREST)
                     mask_arr = np.array(mask) > 127
                 else:
                     mask_arr = _mask_from_json(mask_path, base.size)
                 if mask_arr.any():
-                    overlay = Image.new("RGBA", base.size, (*overlay_color, 0))
-                    overlay_arr = np.array(overlay)
+                    overlay_arr = np.zeros((base.size[1], base.size[0], 4), dtype=np.uint8)
+                    overlay_arr[..., :3] = object_color(obj_id)
                     overlay_arr[mask_arr, 3] = int(255 * alpha)
                     base = Image.alpha_composite(base, Image.fromarray(overlay_arr, "RGBA"))
 
@@ -139,10 +191,6 @@ def export_annotated_video(upload_id: str) -> Path:
         else:
             detail = last_err.output if last_err else "no encoder"
             raise ExportError(f"ffmpeg encode failed: {detail}") from last_err
-
-    meta["export_path"] = out_path.name
-    meta["export_status"] = "ready"
-    storage.save_upload_meta(upload_id, meta)
     return out_path
 
 

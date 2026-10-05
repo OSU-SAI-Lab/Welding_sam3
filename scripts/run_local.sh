@@ -69,11 +69,11 @@ cd "${ROOT}/sam3_video_service"
 SAM3_PID=$!
 
 cd "${ROOT}/labeler_ui"
-SAM3_VIDEO_URL="${SAM3_VIDEO_URL}" "${PY}" -m uvicorn app.main:app --host 0.0.0.0 --port 8080 &
+SAM3_VIDEO_URL="${SAM3_VIDEO_URL}" "${PY}" -m uvicorn app.main:app --host 0.0.0.0 --port 8088 &
 UI_PID=$!
 
 echo ""
 echo "SAM3 video service: http://127.0.0.1:2129"
-echo "Labeler UI:         http://127.0.0.1:8080"
+echo "Labeler UI:         http://127.0.0.1:8088"
 echo "Press Ctrl+C to stop."
 wait

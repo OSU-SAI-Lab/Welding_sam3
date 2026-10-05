@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class PointPrompt(BaseModel):
@@ -65,6 +65,46 @@ class FrameMaskResult(BaseModel):
     bbox: list[int]
     confidence: float
     segmentation: list[list[int]] = Field(default_factory=list)
+
+
+class RLEMask(BaseModel):
+    size: list[int] = Field(..., min_length=2, max_length=2, description="[height, width]")
+    counts: str | list[int] = Field(..., description="COCO compressed string or uncompressed run list")
+
+
+class MaskInput(BaseModel):
+    """Exactly one of png_b64, rle, polygons. Mask should match the video frame size."""
+
+    png_b64: str | None = None
+    rle: RLEMask | None = None
+    polygons: list[list[float]] | None = Field(
+        None, description="COCO polygons: flat [x1, y1, x2, y2, ...] lists in pixels"
+    )
+
+    @model_validator(mode="after")
+    def exactly_one(self) -> "MaskInput":
+        given = [v is not None for v in (self.png_b64, self.rle, self.polygons)]
+        if sum(given) != 1:
+            raise ValueError("provide exactly one of png_b64, rle, polygons")
+        return self
+
+
+class ObjectMaskPrompt(BaseModel):
+    obj_id: int = Field(..., ge=1)
+    label: str | None = Field(None, description="Class name, e.g. 'weld_pool'; used as COCO category")
+    mask: MaskInput
+
+
+class KeyframePrompt(BaseModel):
+    frame_idx: int = Field(..., ge=0, description="0-based decoded frame index (see GET /uploads/{id}/frames/{idx}.jpg)")
+    objects: list[ObjectMaskPrompt] = Field(..., min_length=1)
+
+
+class TrackRequest(BaseModel):
+    keyframes: list[KeyframePrompt] = Field(..., min_length=1)
+    direction: Literal["forward", "both"] = "both"
+    start_frame: int | None = Field(None, ge=0, description="Inclusive; defaults to 0")
+    end_frame: int | None = Field(None, ge=0, description="Inclusive; defaults to last frame")
 
 
 class JobProgressEvent(BaseModel):
