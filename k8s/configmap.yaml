@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sam3-video-config
+data:
+  SAM3_VERSION: "sam3"
+  SAM3_BACKEND: "transformers"
+  SAM3_MOCK: "0"
+  CHUNK_SIZE: "1000"
+  CHUNK_OVERLAP: "50"
+  # Comma-separated list of origins allowed to call this API — set this to the
+  # Smart Labeler frontend's URL(s) once known (e.g. https://smart-labeler.example.edu).
+  CORS_ALLOW_ORIGINS: "*"

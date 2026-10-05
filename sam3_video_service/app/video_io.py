@@ -107,26 +107,23 @@ def extract_frames(
     for old in out_dir.glob("*.jpg"):
         old.unlink()
 
-    # Use select filter for exact frame indices when fps known; fallback ss/to by time.
-    if fps is None:
-        info = probe_video(video_path)
-        fps = float(info.get("fps") or 30.0)
-
-    start_t = start_frame / fps
-    end_t = (end_frame + 1) / fps
-
+    # Select by decoded frame index (not time) so VFR sources such as screen
+    # recordings map to the same indices as the full-video export.
+    # `fps` is unused; kept for call-site compatibility.
     pattern = (out_dir / "%06d.jpg").as_posix()
     cmd = [
         "ffmpeg",
         "-y",
-        "-ss",
-        f"{start_t:.6f}",
-        "-to",
-        f"{end_t:.6f}",
         "-i",
         video_path.as_posix(),
+        "-vf",
+        f"select=between(n\\,{start_frame}\\,{end_frame})",
         "-vsync",
         "0",
+        # Name files by global index directly; renaming 1-based output in place
+        # clobbered not-yet-renamed frames whenever start_frame > 0.
+        "-start_number",
+        str(start_frame),
         "-q:v",
         "2",
         pattern,
@@ -138,19 +135,9 @@ def extract_frames(
     except subprocess.CalledProcessError as e:
         raise VideoIOError(f"ffmpeg extract failed: {e.output}") from e
 
-    produced = sorted(out_dir.glob("*.jpg"))
-    # Rename to global frame indices.
-    renamed: list[Path] = []
-    for offset, src in enumerate(produced):
-        global_idx = start_frame + offset
-        if global_idx > end_frame:
-            src.unlink(missing_ok=True)
-            continue
-        dst = out_dir / f"{global_idx:06d}.jpg"
-        if dst != src:
-            src.rename(dst)
-        renamed.append(dst)
-    return renamed
+    return [
+        p for p in sorted(out_dir.glob("*.jpg")) if start_frame <= int(p.stem) <= end_frame
+    ]
 
 
 def pick_sample_frame(start: int, end: int, exclude: set[int] | None = None) -> int:

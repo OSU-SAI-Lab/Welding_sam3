@@ -75,6 +75,13 @@ mkdir -p "$DATA_ROOT"
 - **UI:** http://127.0.0.1:8080  
 - **API health:** http://127.0.0.1:2129/health  
 
+### NRP (Kubernetes) deployment
+
+`sam3_video_service` (the GPU backend) can run standalone on NRP/Nautilus,
+with the frontend (Smart Labeler) talking to it over HTTPS. See
+[k8s/README.md](k8s/README.md) for the Dockerfile, manifests, and deploy
+steps.
+
 ### SSH tunnel (cluster / remote GPU)
 
 ```bash
@@ -117,6 +124,7 @@ mkdir -p "$DATA_ROOT"
 | `CHUNK_SIZE` | `1000` | Frames per chunk |
 | `CHUNK_OVERLAP` | `50` | Overlap between chunks |
 | `VENV_DIR` | `./.venv` | Override venv location for `setup_env.sh` |
+| `CORS_ALLOW_ORIGINS` | `*` | Comma-separated origins allowed to call the API (set to the frontend's URL in production) |
 
 ## API (`sam3_video_service`)
 
@@ -144,6 +152,56 @@ After at least one chunk is tracked, Step 5 can download:
 - **COCO JSON** — `images` + `annotations` with `bbox` `[x, y, w, h]` and optional polygon `segmentation`
 - **YOLO JSON** — per-frame objects with normalized `bbox_xywhn` (`cx cy w h`) ready to turn into `labels/*.txt`
 - **BBox images ZIP** — JPEGs named like the original video stem, with green boxes drawn on tracked objects
+
+### Multi-object tracking from keyframe masks
+
+For clients that already produce masks (for example a smart labeler that runs point or text prompts per frame). Send masks for one or more objects on one or more keyframes. The service tracks every object across the whole video (or a frame range), chunk by chunk, forward and backward.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/uploads` | Upload video (same as above) → `upload_id`, `frame_count`, `width`, `height` |
+| GET | `/uploads/{id}/frames/{frame_idx}.jpg` | Frame exactly as the tracker indexes it |
+| POST | `/uploads/{id}/track` | Start a tracking job from keyframe masks → `job_id` |
+| GET | `/track-jobs/{job_id}` | Status: `queued` / `running` / `done` / `failed` / `cancelled`, progress |
+| GET | `/track-jobs/{job_id}/events` | SSE stream of status updates until the job ends |
+| DELETE | `/track-jobs/{job_id}` | Cancel |
+| GET | `/track-jobs/{job_id}/frames/{frame_idx}` | All objects on one frame: COCO RLE, bbox, area (`?include_png=true` adds PNG base64) |
+| GET | `/track-jobs/{job_id}/masks/{frame_idx}/{obj_id}.png` | One mask as PNG |
+| GET | `/track-jobs/{job_id}/coco` | COCO JSON, RLE segmentation, `track_id` = `obj_id`, categories from labels |
+| GET | `/track-jobs/{job_id}/video` | Annotated MP4, one color per object (rendered on first request) |
+
+**Frame indexing:** `frame_idx` is the 0-based index of the decoded frame, one per real frame, with no frame-rate resampling. Masks must be drawn on these frames. Use `/uploads/{id}/frames/{idx}.jpg`, or decode with `ffmpeg -vsync 0`. Variable-frame-rate video such as screen recordings will be misaligned if frames are sampled by timestamp.
+
+`POST /uploads/{id}/track` body:
+
+```json
+{
+  "keyframes": [
+    {
+      "frame_idx": 120,
+      "objects": [
+        {"obj_id": 1, "label": "torch", "mask": {"rle": {"size": [726, 1284], "counts": "<COCO RLE string>"}}},
+        {"obj_id": 2, "label": "weld_pool", "mask": {"png_b64": "<base64 PNG, non-zero = object>"}}
+      ]
+    },
+    {
+      "frame_idx": 900,
+      "objects": [
+        {"obj_id": 3, "label": "wire", "mask": {"polygons": [[10, 20, 60, 20, 60, 80, 10, 80]]}}
+      ]
+    }
+  ],
+  "direction": "both",
+  "start_frame": null,
+  "end_frame": null
+}
+```
+
+- Each mask takes exactly one of `png_b64`, `rle` (COCO, compressed string or uncompressed list), or `polygons`, at the video's frame size.
+- Keep the same `obj_id` for the same object across keyframes. Extra keyframes for an object re-anchor it, which helps after occlusion or drift.
+- Objects may first appear on different keyframes. With `direction: "both"`, each object is also tracked backward from its first keyframe to `start_frame`.
+- Jobs run one at a time on the GPU. Results are written to `DATA_ROOT/track_jobs/{job_id}/` and survive a service restart.
+- Requires `SAM3_BACKEND=transformers`. With `SAM3_MOCK=1`, the nearest keyframe mask is copied to every frame, for API testing.
 
 
 ## Troubleshooting

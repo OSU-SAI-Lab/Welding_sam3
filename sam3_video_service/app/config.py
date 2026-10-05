@@ -46,6 +46,12 @@ SAM3_MOCK = os.environ.get("SAM3_MOCK", "0").strip().lower() in ("1", "true", "y
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "2129"))
 
+# Comma-separated origins allowed to call this API (e.g. Smart Labeler frontend URL).
+# "*" (default) disables credentialed CORS since browsers reject wildcard + credentials.
+CORS_ALLOW_ORIGINS = [
+    o.strip() for o in os.environ.get("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()
+]
+
 
 def sam3_backend() -> str:
     """Return active backend: meta or transformers."""

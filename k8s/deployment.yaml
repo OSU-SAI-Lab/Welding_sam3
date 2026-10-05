@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sam3-video-service
+  labels:
+    app: sam3-video-service
+spec:
+  replicas: 1 # keep at 1: sessions live in-process memory, not shared across pods
+  strategy:
+    type: Recreate # avoid two pods fighting over the same GPU / PVC session state
+  selector:
+    matchLabels:
+      app: sam3-video-service
+  template:
+    metadata:
+      labels:
+        app: sam3-video-service
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-A10 #Tesla-V100-SXM2-32GB #NVIDIA-A10
+                      - Tesla-V100-SXM2-32GB
+                      - NVIDIA-GeForce-RTX-3090
+      # CephFS volumes mount as root:root 755; the app runs as uid 1000.
+      initContainers:
+        - name: fix-volume-permissions
+          image: busybox:1.36
+          command: ["sh", "-c", "chown 1000:1000 /data /hf-cache"]
+          securityContext:
+            runAsUser: 0
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: hf-cache
+              mountPath: /hf-cache
+      containers:
+        - name: sam3-video-service
+          image: ghcr.io/icicle-ai/sam3-video-inference-service:v0.0.2
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 2129
+              name: http
+          envFrom:
+            - configMapRef:
+                name: sam3-video-config
+            - secretRef:
+                name: sam3-video-secrets
+          env:
+            - name: DATA_ROOT
+              value: /data
+            - name: HF_HOME
+              value: /hf-cache
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: 32Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: hf-cache
+              mountPath: /hf-cache
+            - name: dshm
+              mountPath: /dev/shm
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 2129
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 2129
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: sam3-video-data
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: sam3-hf-cache
+        - name: dshm # torch DataLoader workers need more than the 64Mi default
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi

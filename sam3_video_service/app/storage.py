@@ -81,6 +81,28 @@ def chunk_meta_path(upload_id: str, chunk_index: int) -> Path:
     return chunk_dir(upload_id, chunk_index) / "chunk_meta.json"
 
 
+def frame_cache_dir(upload_id: str) -> Path:
+    path = upload_dir(upload_id) / "frame_cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def track_jobs_root() -> Path:
+    root = DATA_ROOT / "track_jobs"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def track_job_dir(job_id: str) -> Path:
+    return track_jobs_root() / job_id
+
+
+def track_job_masks_dir(job_id: str) -> Path:
+    path = track_job_dir(job_id) / "masks"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 

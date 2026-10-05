@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import os
-import uuid
+import shutil
+import tempfile
 from pathlib import Path
 
 import requests
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,7 +21,6 @@ from app.sam3_client import Sam3VideoClient
 logger = logging.getLogger(__name__)
 
 SAM3_VIDEO_URL = os.environ.get("SAM3_VIDEO_URL", "http://127.0.0.1:2129").rstrip("/")
-DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/data")).expanduser().resolve()
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CHUNK_SIZE = 1024 * 1024
 
@@ -70,11 +71,10 @@ def index():
 async def upload(file: UploadFile = File(...)):
     if not file.filename:
         raise HTTPException(400, "filename required")
-    upload_id = str(uuid.uuid4())
-    suffix = Path(file.filename).suffix.lower() or ".mp4"
-    upload_dir = DATA_ROOT / "uploads" / upload_id
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    dest = upload_dir / f"source{suffix}"
+    # Stage locally, then send the bytes to the backend: it may run on another
+    # host (e.g. NRP) with no shared filesystem.
+    staging = Path(tempfile.mkdtemp(prefix="labeler-upload-"))
+    dest = staging / Path(file.filename).name
     logger.info("Receiving upload %s -> %s", file.filename, dest)
     try:
         with dest.open("wb") as out:
@@ -83,11 +83,9 @@ async def upload(file: UploadFile = File(...)):
                 if not chunk:
                     break
                 out.write(chunk)
-        logger.info("Upload saved (%s bytes), finalizing…", dest.stat().st_size)
-        meta = client.finalize_upload(upload_id, file.filename)
-        return meta
+        logger.info("Upload staged (%s bytes), sending to SAM3 service…", dest.stat().st_size)
+        return await run_in_threadpool(client.upload, dest)
     except requests.HTTPError as e:
-        dest.unlink(missing_ok=True)
         status = e.response.status_code if e.response is not None else 502
         detail = str(e)
         if e.response is not None:
@@ -97,17 +95,11 @@ async def upload(file: UploadFile = File(...)):
                 detail = e.response.text or detail
         raise HTTPException(status, detail) from e
     except OSError as e:
-        dest.unlink(missing_ok=True)
-        if e.errno == 122:
-            raise HTTPException(
-                507,
-                "Disk quota exceeded. Restart with DATA_ROOT on project storage: "
-                "export DATA_ROOT=/fs/ess/PAS2699/$USER/sam3-video-labeler-data",
-            ) from e
-        raise HTTPException(500, f"Failed to save upload: {e}") from e
+        raise HTTPException(500, f"Failed to stage upload: {e}") from e
     except Exception as e:
-        dest.unlink(missing_ok=True)
         raise HTTPException(502, f"Upload failed: {e}") from e
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 @app.get("/api/uploads/{upload_id}/status")
