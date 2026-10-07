@@ -9,6 +9,7 @@ resources:
   - configmap.yaml
   - deployment.yaml
   - service.yaml
+  - networkpolicy.yaml
   - ingress.yaml
   # secret.yaml is git-ignored — copy from secret.example.yaml and apply separately,
   # or uncomment once it exists locally:

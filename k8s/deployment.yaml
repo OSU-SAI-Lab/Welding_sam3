@@ -47,6 +47,48 @@ spec:
             - name: hf-cache
               mountPath: /hf-cache
       containers:
+        # Authenticating gateway. Everything from outside the pod arrives here:
+        # it validates the caller's Tapis token, hands back a session cookie,
+        # and refuses requests for uploads or jobs belonging to another user.
+        # The SAM3 container below is never published directly.
+        - name: auth-gateway
+          image: ghcr.io/icicle-ai/sam3-video-auth-gateway:v0.1.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: sam3-video-config
+            - secretRef:
+                name: sam3-video-secrets
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            # Ownership records sit beside the uploads they describe.
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
         - name: sam3-video-service
           image: ghcr.io/icicle-ai/sam3-video-inference-service:v0.0.2
           imagePullPolicy: Always

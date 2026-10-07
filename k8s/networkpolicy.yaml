@@ -1,0 +1,20 @@
+# NRP/Nautilus is a shared, multi-tenant cluster: without this, any pod in it
+# could reach the SAM3 service directly on port 2129 and bypass the auth
+# gateway entirely. This allows traffic to the gateway's port only.
+#
+# Kubelet health probes originate from the node rather than a pod, so they are
+# unaffected and the SAM3 container's own probes on 2129 keep working.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sam3-video-service-gateway-only
+spec:
+  podSelector:
+    matchLabels:
+      app: sam3-video-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080

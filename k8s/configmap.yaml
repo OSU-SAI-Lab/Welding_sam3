@@ -8,6 +8,20 @@ data:
   SAM3_MOCK: "0"
   CHUNK_SIZE: "1000"
   CHUNK_OVERLAP: "50"
-  # Comma-separated list of origins allowed to call this API — set this to the
-  # Smart Labeler frontend's URL(s) once known (e.g. https://smart-labeler.example.edu).
-  CORS_ALLOW_ORIGINS: "*"
+  # The gateway in front of this service owns CORS now, and it is the only
+  # caller the SAM3 service ever sees, so this stays closed.
+  CORS_ALLOW_ORIGINS: "http://127.0.0.1:8080"
+
+  # ── Auth gateway ──
+  UPSTREAM_URL: "http://127.0.0.1:2129"
+  TAPIS_BASE_URL: "https://icicleai.tapis.io"
+  # Origins allowed to call the API with credentials. Must be the exact
+  # frontend origin(s) — a browser refuses a wildcard on credentialed requests.
+  ALLOWED_ORIGINS: "https://smart-labeler.example.edu"
+  # Cross-site cookies need SameSite=None + Secure, which needs HTTPS. The
+  # Ingress terminates TLS, so this is correct in the cluster; local http
+  # development needs COOKIE_SAMESITE=lax and COOKIE_SECURE=0 instead.
+  COOKIE_SAMESITE: "none"
+  COOKIE_SECURE: "1"
+  SESSION_TTL_SECONDS: "43200"
+  OWNERSHIP_DB: "/data/auth_gateway/ownership.sqlite3"

@@ -6,7 +6,10 @@ spec:
   selector:
     app: sam3-video-service
   ports:
+    # Only the auth gateway is exposed. The SAM3 service itself listens on 2129
+    # inside the pod and is deliberately not published here — everything reaches
+    # it through the gateway, which authenticates the caller.
     - name: http
       port: 80
-      targetPort: 2129
+      targetPort: 8080
   type: ClusterIP
