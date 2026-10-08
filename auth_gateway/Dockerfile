@@ -1,5 +1,11 @@
 FROM python:3.12-slim
 
+# The dataset exporter re-extracts frames from the source video, so this image
+# needs ffmpeg as well as the Python runtime.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /srv
 
 COPY requirements.txt .

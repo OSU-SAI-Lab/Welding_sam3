@@ -26,7 +26,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app import ownership, sessions
+from app import export_jobs, ownership, sessions
 from app.config import (
     ALLOWED_ORIGINS,
     COOKIE_SAMESITE,
@@ -46,6 +46,7 @@ app = FastAPI(title="SAM3 Video Service auth gateway", version="0.1.0")
 # Paths served by the gateway itself rather than proxied.
 AUTH_SESSION_PATH = "/auth/session"
 AUTH_WHOAMI_PATH = "/auth/whoami"
+EXPORTS_PATH = "/exports"
 
 # Reachable without a session: the health probe (kubelet sends no cookies) and
 # the sign-in endpoint itself.
@@ -167,6 +168,94 @@ async def end_session(request: Request) -> Response:
     response = _json(200, {"detail": "signed out"}, request.headers.get("origin"))
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return response
+
+
+# ---------------------------------------------------------------------------
+# Dataset export to HPC
+# ---------------------------------------------------------------------------
+
+@app.post(EXPORTS_PATH)
+async def start_export(request: Request) -> Response:
+    """
+    Begin an asynchronous export of a labelled frame dataset to HPC storage.
+
+    Needs the caller's Tapis token in addition to their session, because the
+    gateway writes to Tapis as them. The token is held for the life of the job
+    and never written to disk.
+    """
+    origin = request.headers.get("origin")
+    username = _username_or_none(request)
+    if username is None:
+        return _json(401, {"detail": "Sign in to export."}, origin)
+
+    token = request.headers.get("x-tapis-token") or ""
+    if not token:
+        return _json(400, {"detail": "A Tapis token is required to write to HPC storage."}, origin)
+
+    try:
+        body = await request.json()
+    except ValueError:
+        return _json(400, {"detail": "Expected a JSON body."}, origin)
+
+    upload_id = str(body.get("upload_id") or "")
+    track_job_id = body.get("track_job_id") or None
+    if not upload_id:
+        return _json(400, {"detail": "upload_id is required."}, origin)
+    if not ownership.may_access("upload", upload_id, username):
+        return _json(403, {"detail": "This video belongs to another user."}, origin)
+    if track_job_id and not ownership.may_access("job", str(track_job_id), username):
+        return _json(403, {"detail": "This tracking job belongs to another user."}, origin)
+
+    system = str(body.get("system") or "")
+    if not system:
+        return _json(400, {"detail": "system is required."}, origin)
+
+    try:
+        job = export_jobs.submit(
+            username=username,
+            upload_id=upload_id,
+            track_job_id=str(track_job_id) if track_job_id else None,
+            system=system,
+            dest_dir=str(body.get("dest_dir") or ""),
+            filename=str(body.get("filename") or ""),
+            token=token,
+        )
+    except ValueError as e:
+        return _json(400, {"detail": str(e)}, origin)
+    return _json(200, job.public(), origin)
+
+
+@app.get(EXPORTS_PATH)
+async def list_exports(request: Request) -> Response:
+    origin = request.headers.get("origin")
+    username = _username_or_none(request)
+    if username is None:
+        return _json(401, {"detail": "Sign in to export."}, origin)
+    return _json(200, {"exports": export_jobs.list_for(username)}, origin)
+
+
+@app.get(EXPORTS_PATH + "/{export_id}")
+async def get_export(export_id: str, request: Request) -> Response:
+    origin = request.headers.get("origin")
+    username = _username_or_none(request)
+    if username is None:
+        return _json(401, {"detail": "Sign in to export."}, origin)
+    state = export_jobs.get(export_id, username)
+    if state is None:
+        return _json(404, {"detail": "No such export."}, origin)
+    return _json(200, state, origin)
+
+
+@app.delete(EXPORTS_PATH + "/{export_id}")
+async def cancel_export(export_id: str, request: Request) -> Response:
+    origin = request.headers.get("origin")
+    username = _username_or_none(request)
+    if username is None:
+        return _json(401, {"detail": "Sign in to export."}, origin)
+    state = export_jobs.cancel(export_id, username)
+    if state is None:
+        return _json(404, {"detail": "No such export."}, origin)
+    return _json(200, state, origin)
 
 
 @app.get(AUTH_WHOAMI_PATH)
