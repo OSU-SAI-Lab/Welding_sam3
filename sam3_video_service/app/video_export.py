@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import tempfile
 from pathlib import Path
@@ -12,6 +13,8 @@ from PIL import Image, ImageDraw
 from app import storage
 from app.chunk_planner import plan_chunks
 from app.config import DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP
+
+logger = logging.getLogger(__name__)
 
 
 class ExportError(RuntimeError):
@@ -139,11 +142,43 @@ def render_overlay_video(
         except subprocess.CalledProcessError as e:
             raise ExportError(f"ffmpeg frame extract failed: {e.output}") from e
 
-        for frame_idx in range(frame_count):
-            src = frames_dir / f"{frame_idx:06d}.jpg"
-            if not src.is_file():
-                # ffmpeg may use 1-based names when start_number omitted on older builds
-                src = frames_dir / f"{frame_idx + 1:06d}.jpg"
+        extracted = sorted(frames_dir.glob("*.jpg"))
+        if not extracted:
+            raise ExportError("ffmpeg extracted no frames from the source video")
+
+        # ffmpeg may use 1-based names when -start_number is unsupported on older
+        # builds. Settle that once, from the first file, rather than per frame: a
+        # per-frame fallback silently substitutes frame N+1 wherever N is absent,
+        # which shifts every later frame out of step with its masks.
+        offset = 0 if (frames_dir / "000000.jpg").is_file() else 1
+
+        # Export the contiguous run from the start. `frame_count` comes from the
+        # container's metadata, which routinely overstates the length by a frame
+        # or two after a trim or re-encode; trusting it threw the whole export
+        # away over a frame that was never there.
+        available = 0
+        while available < frame_count and (frames_dir / f"{available + offset:06d}.jpg").is_file():
+            available += 1
+
+        if available == 0:
+            raise ExportError("ffmpeg produced no frame numbered from the start of the video")
+        if available < frame_count:
+            # A short tail means the metadata overstated the length, which is
+            # expected and safe to clamp. A hole with frames beyond it is a real
+            # extraction fault, and overlaying past it would misalign the masks.
+            highest = int(extracted[-1].stem) - offset
+            if highest >= available:
+                raise ExportError(
+                    f"Missing extracted frame {available}, but frames up to {highest} exist — "
+                    f"extraction produced a gap rather than a short video"
+                )
+            logger.warning(
+                "%s decoded %d frames but its metadata claims %d; exporting the %d that exist",
+                video_path.name, available, frame_count, available,
+            )
+
+        for frame_idx in range(available):
+            src = frames_dir / f"{frame_idx + offset:06d}.jpg"
             if not src.is_file():
                 raise ExportError(f"Missing extracted frame {frame_idx}")
 
