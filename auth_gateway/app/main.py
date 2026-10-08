@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 import httpx
 from fastapi import FastAPI, Request, Response
@@ -37,7 +38,7 @@ from app.config import (
     SESSION_TTL_SECONDS,
     UPSTREAM_URL,
 )
-from app.tapis import TapisAuthError, username_for_token
+from app.tapis import TapisAuthError, token_expiry, username_for_token
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="SAM3 Video Service auth gateway", version="0.1.0")
@@ -132,17 +133,27 @@ async def create_session(request: Request) -> Response:
     except TapisAuthError as e:
         return _json(401, {"detail": str(e)}, origin)
 
+    # Never outlive the token this session was minted from: a Tapis token is
+    # typically good for a few hours, and a stateless session cannot be revoked
+    # early, so the shorter of the two wins.
+    ttl = SESSION_TTL_SECONDS
+    exp = token_expiry(token)
+    if exp is not None:
+        ttl = max(0, min(ttl, exp - int(time.time())))
+    if ttl <= 0:
+        return _json(401, {"detail": "That Tapis token has expired. Sign in again."}, origin)
+
     try:
-        cookie = sessions.issue(username)
+        cookie = sessions.issue(username, ttl=ttl)
     except sessions.SessionError as e:
         logger.error("could not issue a session: %s", e)
         return _json(500, {"detail": "session signing is not configured on the server"}, origin)
 
-    response = _json(200, {"username": username, "expires_in": SESSION_TTL_SECONDS}, origin)
+    response = _json(200, {"username": username, "expires_in": ttl}, origin)
     response.set_cookie(
         SESSION_COOKIE_NAME,
         cookie,
-        max_age=SESSION_TTL_SECONDS,
+        max_age=ttl,
         httponly=True,
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,

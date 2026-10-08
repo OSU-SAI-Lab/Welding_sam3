@@ -19,6 +19,30 @@ class TapisAuthError(Exception):
 _cache: dict[str, tuple[str, float]] = {}
 
 
+def token_expiry(token: str) -> int | None:
+    """
+    The `exp` claim from a Tapis JWT, as a unix timestamp.
+
+    Read without verifying the signature, which is safe here because the token
+    is only trusted once `username_for_token` has had Tapis validate it; this
+    just reads the expiry out of the payload so a session cannot be issued that
+    outlives the credential it was minted from.
+    """
+    import base64
+    import json
+
+    try:
+        payload = token.split(".")[1]
+        padded = payload + "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(padded))
+        exp = claims.get("exp")
+        return int(exp) if exp is not None else None
+    except Exception:
+        # Not a readable JWT, or no exp claim. The caller falls back to the
+        # configured TTL rather than refusing a token Tapis itself accepted.
+        return None
+
+
 async def username_for_token(token: str) -> str:
     if not token:
         raise TapisAuthError("no token supplied")
