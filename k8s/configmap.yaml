@@ -12,6 +12,10 @@ data:
   # caller the SAM3 service ever sees, so this stays closed.
   CORS_ALLOW_ORIGINS: "http://127.0.0.1:8080"
 
+  # Shared by both containers: the service writes here, the gateway reads the
+  # same tree for ownership records and dataset exports.
+  DATA_ROOT: "/data"
+
   # ── Auth gateway ──
   UPSTREAM_URL: "http://127.0.0.1:2129"
   TAPIS_BASE_URL: "https://icicleai.tapis.io"

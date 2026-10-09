@@ -36,15 +36,13 @@ from typing import Any
 
 import httpx
 
-from app.config import OWNERSHIP_DB, UPSTREAM_URL
+from app.config import DATA_ROOT, OWNERSHIP_DB, UPSTREAM_URL
 
 logger = logging.getLogger(__name__)
 
 # Lives beside the ownership database, on the shared volume, so a job survives a
 # gateway restart well enough to be reported on.
 _STATE_DIR = Path(OWNERSHIP_DB).parent / "exports"
-
-DATA_ROOT = Path("/data")
 
 # Phases, in order. Reported so the UI can say what is happening rather than
 # showing one undifferentiated bar for a multi-minute operation.

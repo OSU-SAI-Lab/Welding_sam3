@@ -47,10 +47,12 @@ app = FastAPI(title="SAM3 Video Service auth gateway", version="0.1.0")
 AUTH_SESSION_PATH = "/auth/session"
 AUTH_WHOAMI_PATH = "/auth/whoami"
 EXPORTS_PATH = "/exports"
+# The gateway's own liveness, answered without touching the upstream.
+GATEWAY_HEALTH_PATH = "/gateway/health"
 
 # Reachable without a session: the health probe (kubelet sends no cookies) and
 # the sign-in endpoint itself.
-OPEN_PATHS = {"/health", AUTH_SESSION_PATH}
+OPEN_PATHS = {"/health", AUTH_SESSION_PATH, GATEWAY_HEALTH_PATH}
 
 UPLOAD_RE = re.compile(r"^/uploads/([^/]+)")
 JOB_RE = re.compile(r"^/track-jobs/([^/]+)")
@@ -168,6 +170,23 @@ async def end_session(request: Request) -> Response:
     response = _json(200, {"detail": "signed out"}, request.headers.get("origin"))
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return response
+
+
+@app.get(GATEWAY_HEALTH_PATH)
+async def gateway_health() -> Response:
+    """
+    Liveness for this container alone.
+
+    Deliberately separate from `/health`, which proxies to the video service:
+    that one is the pod's *readiness* (is the GPU service answering), while this
+    one must stay green while the video service is still starting, or kubelet
+    would restart the gateway in a loop for a fault that is not its own.
+    """
+    return JSONResponse({
+        "status": "ok",
+        "signing_configured": bool(SESSION_SECRET),
+        "upstream": UPSTREAM_URL,
+    })
 
 
 # ---------------------------------------------------------------------------

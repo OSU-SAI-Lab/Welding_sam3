@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 # The SAM3 video service, which binds localhost inside the pod so that this
 # gateway is the only way in.
@@ -31,9 +32,14 @@ SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", str(12 * 3600)))
 COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "none").lower()
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1").strip().lower() in ("1", "true", "yes")
 
+# Where the video service keeps its uploads, masks and jobs. The gateway reads
+# the same tree to export datasets, so this must match the service's own
+# DATA_ROOT — /data in the container, a project filesystem path on HPC.
+DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/data")).expanduser().resolve()
+
 # Ownership records live on the same PVC as the uploads they describe, so they
 # survive restarts and stay with the data.
-OWNERSHIP_DB = os.environ.get("OWNERSHIP_DB", "/data/auth_gateway/ownership.sqlite3")
+OWNERSHIP_DB = os.environ.get("OWNERSHIP_DB", str(DATA_ROOT / "auth_gateway" / "ownership.sqlite3"))
 
 HOST = os.environ.get("GATEWAY_HOST", "0.0.0.0")
 PORT = int(os.environ.get("GATEWAY_PORT", "8080"))

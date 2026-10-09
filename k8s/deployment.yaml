@@ -64,25 +64,36 @@ spec:
                 name: sam3-video-secrets
           resources:
             requests:
-              cpu: 200m
-              memory: 256Mi
-            limits:
-              cpu: "1"
+              cpu: 500m
               memory: 512Mi
+            limits:
+              # Dataset export runs ffmpeg over the whole video, so this needs
+              # real CPU; the proxy itself is nearly idle.
+              cpu: "4"
+              memory: 2Gi
           volumeMounts:
             # Ownership records sit beside the uploads they describe.
             - name: data
               mountPath: /data
+          # Readiness proxies through to the video service, so the pod only
+          # takes traffic once the GPU service is actually answering. That makes
+          # it the readiness probe for BOTH containers — which is deliberate,
+          # because the NetworkPolicy admits only 8080 and a kubelet probe
+          # against 2129 may be dropped by the CNI, leaving the pod never-ready.
           readinessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 10
-            timeoutSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 6
+          # Liveness checks only the gateway itself. Pointing it at /health
+          # would restart the gateway every time the video service was slow to
+          # start — a fault that is not the gateway's to answer for.
           livenessProbe:
             httpGet:
-              path: /health
+              path: /gateway/health
               port: 8080
             initialDelaySeconds: 20
             periodSeconds: 30
@@ -121,21 +132,11 @@ spec:
               mountPath: /hf-cache
             - name: dshm
               mountPath: /dev/shm
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 2129
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 5
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 2129
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 5
-            failureThreshold: 3
+          # No httpGet probes here on purpose. Port 2129 is not published and
+          # the NetworkPolicy admits only 8080, so a kubelet probe against it
+          # can be dropped by the CNI and the pod would never become ready.
+          # The gateway's readiness probe proxies to this service's own /health,
+          # so the pod's readiness already reflects this container's state.
       volumes:
         - name: data
           persistentVolumeClaim:
