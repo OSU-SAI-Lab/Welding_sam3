@@ -21,7 +21,7 @@ data:
   TAPIS_BASE_URL: "https://icicleai.tapis.io"
   # Origins allowed to call the API with credentials. Must be the exact
   # frontend origin(s) — a browser refuses a wildcard on credentialed requests.
-  ALLOWED_ORIGINS: "https://smart-labeler.example.edu"
+  ALLOWED_ORIGINS: "http://localhost:5200"
   # Cross-site cookies need SameSite=None + Secure, which needs HTTPS. The
   # Ingress terminates TLS, so this is correct in the cluster; local http
   # development needs COOKIE_SAMESITE=lax and COOKIE_SECURE=0 instead.

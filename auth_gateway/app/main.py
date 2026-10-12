@@ -70,6 +70,14 @@ async def _startup() -> None:
     global _client
     if not SESSION_SECRET:
         logger.error("SESSION_SECRET is not set — every authenticated request will be refused")
+    if "*" in ALLOWED_ORIGINS:
+        logger.error(
+            "ALLOWED_ORIGINS contains '*', which cannot work here: this gateway sends "
+            "Access-Control-Allow-Credentials, and browsers refuse to pair credentials with a "
+            "wildcard origin. It is also matched literally, so it allows nothing. List the exact "
+            "frontend origins instead, comma-separated."
+        )
+    logger.info("CORS allow-list: %s", ", ".join(ALLOWED_ORIGINS) or "(empty — all browsers will be refused)")
     # No timeout: tracking SSE streams stay open for the length of a job and a
     # video render can take many minutes.
     _client = httpx.AsyncClient(base_url=UPSTREAM_URL, timeout=None)
@@ -88,8 +96,24 @@ async def _shutdown() -> None:
 # exact origin echoed back, and the proxied responses carry the upstream's own
 # CORS headers which have to be replaced rather than duplicated.
 
+# Origins already complained about, so a reloading browser does not flood the log.
+_refused_origins: set[str] = set()
+
+
 def _cors_headers(origin: str | None) -> dict[str, str]:
-    if not origin or origin.rstrip("/") not in ALLOWED_ORIGINS:
+    if not origin:
+        return {}
+    if origin.rstrip("/") not in ALLOWED_ORIGINS:
+        # Without this the refusal is invisible: the service answers 200, the
+        # browser discards the response for want of a CORS header, and the user
+        # sees a generic "could not reach the service".
+        if origin not in _refused_origins:
+            _refused_origins.add(origin)
+            logger.warning(
+                "refused CORS for origin %r — not in ALLOWED_ORIGINS (%s). "
+                "Browsers will discard every response to that origin.",
+                origin, ", ".join(ALLOWED_ORIGINS) or "(empty)",
+            )
         return {}
     return {
         "Access-Control-Allow-Origin": origin,
