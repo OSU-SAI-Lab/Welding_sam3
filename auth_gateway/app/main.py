@@ -186,6 +186,17 @@ async def create_session(request: Request) -> Response:
         samesite=COOKIE_SAMESITE,
         path="/",
     )
+    # Partitioned (CHIPS) is what lets a cross-site cookie survive in an iframe
+    # on Chrome, keyed to the embedding site. Starlette has no argument for it,
+    # so it is appended to the header it just wrote.
+    if COOKIE_SAMESITE == "none" and COOKIE_SECURE:
+        cookies = response.headers.getlist("set-cookie")
+        if cookies:
+            del response.headers["set-cookie"]
+            for c in cookies:
+                response.headers.append(
+                    "set-cookie", c if "partitioned" in c.lower() else f"{c}; Partitioned"
+                )
     return response
 
 
@@ -227,7 +238,7 @@ async def start_export(request: Request) -> Response:
     and never written to disk.
     """
     origin = request.headers.get("origin")
-    username = _username_or_none(request)
+    username = await _caller(request)
     if username is None:
         return _json(401, {"detail": "Sign in to export."}, origin)
 
@@ -271,7 +282,7 @@ async def start_export(request: Request) -> Response:
 @app.get(EXPORTS_PATH)
 async def list_exports(request: Request) -> Response:
     origin = request.headers.get("origin")
-    username = _username_or_none(request)
+    username = await _caller(request)
     if username is None:
         return _json(401, {"detail": "Sign in to export."}, origin)
     return _json(200, {"exports": export_jobs.list_for(username)}, origin)
@@ -280,7 +291,7 @@ async def list_exports(request: Request) -> Response:
 @app.get(EXPORTS_PATH + "/{export_id}")
 async def get_export(export_id: str, request: Request) -> Response:
     origin = request.headers.get("origin")
-    username = _username_or_none(request)
+    username = await _caller(request)
     if username is None:
         return _json(401, {"detail": "Sign in to export."}, origin)
     state = export_jobs.get(export_id, username)
@@ -292,7 +303,7 @@ async def get_export(export_id: str, request: Request) -> Response:
 @app.delete(EXPORTS_PATH + "/{export_id}")
 async def cancel_export(export_id: str, request: Request) -> Response:
     origin = request.headers.get("origin")
-    username = _username_or_none(request)
+    username = await _caller(request)
     if username is None:
         return _json(401, {"detail": "Sign in to export."}, origin)
     state = export_jobs.cancel(export_id, username)
@@ -304,19 +315,44 @@ async def cancel_export(export_id: str, request: Request) -> Response:
 @app.get(AUTH_WHOAMI_PATH)
 async def whoami(request: Request) -> Response:
     origin = request.headers.get("origin")
-    username = _username_or_none(request)
+    username = await _caller(request)
     if username is None:
         return _json(401, {"detail": "not signed in"}, origin)
     return _json(200, {"username": username}, origin)
 
 
 def _username_or_none(request: Request) -> str | None:
+    """Identity from the session cookie, or None."""
     cookie = request.cookies.get(SESSION_COOKIE_NAME)
     if not cookie:
         return None
     try:
         return sessions.verify(cookie)
     except sessions.SessionError:
+        return None
+
+
+async def _caller(request: Request) -> str | None:
+    """
+    Who is calling: session cookie first, then an X-Tapis-Token header.
+
+    The header path exists because cookies cannot be relied on when this app is
+    embedded in another site — a cross-site iframe makes the session cookie a
+    third-party cookie, which Chrome blocks by default and Safari refuses
+    outright. Sign-in then succeeds and every following request arrives
+    anonymous. A token header is unaffected by that, so it is the dependable
+    path; the cookie is kept because `EventSource` cannot send headers and the
+    progress stream needs it where cookies do work.
+    """
+    username = _username_or_none(request)
+    if username is not None:
+        return username
+    token = request.headers.get("x-tapis-token")
+    if not token:
+        return None
+    try:
+        return await username_for_token(token)
+    except TapisAuthError:
         return None
 
 
@@ -387,7 +423,7 @@ async def proxy(path: str, request: Request) -> Response:
             headers=_response_headers(upstream, origin),
         )
 
-    username = _username_or_none(request)
+    username = await _caller(request)
     if username is None:
         return _json(401, {"detail": "Sign in to use the video service."}, origin)
 

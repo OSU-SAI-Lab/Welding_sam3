@@ -23,10 +23,33 @@ spec:
               - matchExpressions:
                   - key: nvidia.com/gpu.product
                     operator: In
+                    # Ampere or newer only: sam3_engine loads the model in
+                    # bfloat16 on CUDA, which Volta (V100) and Turing (T4) lack
+                    # natively. Listing only three products left 233 of 532
+                    # nodes ineligible, so on a busy cluster the pod could not
+                    # schedule at all.
                     values:
-                      - NVIDIA-A10 #Tesla-V100-SXM2-32GB #NVIDIA-A10
-                      - Tesla-V100-SXM2-32GB
+                      - NVIDIA-A10
+                      - NVIDIA-A10G
+                      - NVIDIA-A40
+                      - NVIDIA-A100-SXM4-80GB
+                      - NVIDIA-A100-PCIE-40GB
+                      - NVIDIA-L40
+                      - NVIDIA-L40S
+                      - NVIDIA-RTX-A6000
                       - NVIDIA-GeForce-RTX-3090
+                      - NVIDIA-GeForce-RTX-4090
+                      - Tesla-V100-SXM2-32GB
+                  # Excluded nodes. hcc-nrp-shor-c6017 runs driver 615.71.09,
+                  # on which a plain strided GPU copy — permute().contiguous()
+                  # of a (1,72,72,1024) tensor — fails with an illegal memory
+                  # access. SAM3's vision encoder produces exactly that shape,
+                  # so tracking dies on the first frame there. Nothing in this
+                  # repo can work around it; the driver is the fault.
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - hcc-nrp-shor-c6017.unl.edu
       # CephFS volumes mount as root:root 755; the app runs as uid 1000.
       initContainers:
         - name: fix-volume-permissions
@@ -52,7 +75,7 @@ spec:
         # and refuses requests for uploads or jobs belonging to another user.
         # The SAM3 container below is never published directly.
         - name: auth-gateway
-          image: ghcr.io/icicle-ai/sam3-video-auth-gateway:v0.1.0
+          image: ghcr.io/icicle-ai/sam3-video-auth-gateway:v0.1.2
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -101,7 +124,11 @@ spec:
             failureThreshold: 3
 
         - name: sam3-video-service
-          image: ghcr.io/icicle-ai/sam3-video-inference-service:v0.0.2
+          # Pin an immutable tag. A mutable tag plus imagePullPolicy: Always
+          # means every reschedule pulls whatever that tag happens to point at —
+          # which silently reverted this deployment to a build with no tracking
+          # endpoints more than once.
+          image: ghcr.io/icicle-ai/sam3-video-service:v0.1.2
           imagePullPolicy: Always
           ports:
             - containerPort: 2129
