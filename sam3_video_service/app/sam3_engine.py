@@ -35,6 +35,9 @@ _video_processor = None
 _meta_predictor = None
 _sam3_ready: bool | None = None
 _sam3_loading: bool = False
+# Why the last load failed, so callers can report the cause rather than a
+# generic "failed to load" that sends everyone digging through pod logs.
+_sam3_load_error: str | None = None
 
 
 def sam3_status() -> dict[str, Any]:
@@ -63,6 +66,7 @@ def sam3_status() -> dict[str, Any]:
         "device": SAM3_DEVICE if torch.cuda.is_available() else "cpu",
         "tracker_loaded": _tracker_model is not None or _meta_predictor is not None,
         "video_loaded": _video_model is not None,
+        "load_error": _sam3_load_error,
     }
 
 
@@ -116,7 +120,8 @@ def _ensure_meta_sam3() -> bool:
 
 
 def _ensure_transformers_sam3(*, load_video: bool = False) -> bool:
-    global _sam3_ready, _sam3_loading, _tracker_model, _tracker_processor, _video_model, _video_processor
+    global _sam3_ready, _sam3_loading, _sam3_load_error
+    global _tracker_model, _tracker_processor, _video_model, _video_processor
     if _tracker_model is not None and _tracker_processor is not None:
         if not load_video or _video_model is not None:
             _sam3_ready = True
@@ -131,29 +136,35 @@ def _ensure_transformers_sam3(*, load_video: bool = False) -> bool:
         device = SAM3_DEVICE if torch.cuda.is_available() else "cpu"
         dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
-        if _tracker_model is None:
+        # Model and processor are built into locals and published together. A
+        # processor that failed after its model loaded used to leave the model
+        # set and the processor None; the next call then skipped loading and
+        # reported ready, and every job died on `None.init_video_session`.
+        if _tracker_model is None or _tracker_processor is None:
             logger.info("Loading Sam3TrackerVideoModel on %s …", device)
-            _tracker_model = Sam3TrackerVideoModel.from_pretrained(SAM3_MODEL_ID)
-            _tracker_model = _tracker_model.to(device, dtype=dtype)
-            _tracker_processor = Sam3TrackerVideoProcessor.from_pretrained(SAM3_MODEL_ID)
-            _tracker_model.eval()
+            model = Sam3TrackerVideoModel.from_pretrained(SAM3_MODEL_ID).to(device, dtype=dtype)
+            processor = Sam3TrackerVideoProcessor.from_pretrained(SAM3_MODEL_ID)
+            model.eval()
+            _tracker_model, _tracker_processor = model, processor
             logger.info("Sam3TrackerVideoModel ready")
 
-        if load_video and _video_model is None:
+        if load_video and (_video_model is None or _video_processor is None):
             from transformers import Sam3VideoModel, Sam3VideoProcessor
 
             logger.info("Loading Sam3VideoModel on %s …", device)
-            _video_model = Sam3VideoModel.from_pretrained(SAM3_MODEL_ID)
-            _video_model = _video_model.to(device, dtype=dtype)
-            _video_processor = Sam3VideoProcessor.from_pretrained(SAM3_MODEL_ID)
-            _video_model.eval()
+            model = Sam3VideoModel.from_pretrained(SAM3_MODEL_ID).to(device, dtype=dtype)
+            processor = Sam3VideoProcessor.from_pretrained(SAM3_MODEL_ID)
+            model.eval()
+            _video_model, _video_processor = model, processor
             logger.info("Sam3VideoModel ready")
 
         _sam3_ready = True
+        _sam3_load_error = None
         return True
     except Exception as e:
-        logger.warning("Transformers SAM3 unavailable (%s); using mock masks", e)
+        logger.exception("Transformers SAM3 unavailable; using mock masks")
         _sam3_ready = False
+        _sam3_load_error = f"{type(e).__name__}: {e}"
         return False
     finally:
         _sam3_loading = False

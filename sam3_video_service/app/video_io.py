@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import random
 import subprocess
+import tempfile
+import time
 from pathlib import Path
+from typing import Callable
 
 
 class VideoIOError(RuntimeError):
@@ -101,11 +104,21 @@ def extract_frames(
     start_frame: int,
     end_frame: int,
     fps: float | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[Path]:
-    """Extract inclusive frame range to out_dir/%06d.jpg (0-based global indices in names)."""
+    """Extract inclusive frame range to out_dir/%06d.jpg (0-based global indices in names).
+
+    `should_stop` is polled while ffmpeg runs; when it returns True ffmpeg is
+    killed and an empty list is returned, so a cancelled tracking job does not
+    sit out an extraction that can take minutes. The caller decides what a stop
+    means.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
+    # missing_ok: the glob and the unlink are not atomic, so a concurrent
+    # request clearing the same chunk removes entries between the two and the
+    # loser used to raise FileNotFoundError out of the request.
     for old in out_dir.glob("*.jpg"):
-        old.unlink()
+        old.unlink(missing_ok=True)
 
     # Select by decoded frame index (not time) so VFR sources such as screen
     # recordings map to the same indices as the full-video export.
@@ -124,16 +137,33 @@ def extract_frames(
         # clobbered not-yet-renamed frames whenever start_frame > 0.
         "-start_number",
         str(start_frame),
+        # Stop once the range is written. `select` alone only filters, so ffmpeg
+        # otherwise decodes on to the end of the video for every chunk.
+        "-frames:v",
+        str(end_frame - start_frame + 1),
         "-q:v",
         "2",
         pattern,
     ]
-    try:
-        subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
-    except FileNotFoundError as e:
-        raise VideoIOError("ffmpeg not found; install ffmpeg") from e
-    except subprocess.CalledProcessError as e:
-        raise VideoIOError(f"ffmpeg extract failed: {e.output}") from e
+    # stderr goes to a file, not a pipe: nothing reads it while ffmpeg runs, and
+    # a corrupt video can log enough to fill a pipe and hang ffmpeg.
+    with tempfile.TemporaryFile(mode="w+") as log:
+        try:
+            process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=log, text=True)
+        except FileNotFoundError as e:
+            raise VideoIOError("ffmpeg not found; install ffmpeg") from e
+        try:
+            while process.poll() is None:
+                if should_stop is not None and should_stop():
+                    return []
+                time.sleep(0.5)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        if process.returncode != 0:
+            log.seek(0)
+            raise VideoIOError(f"ffmpeg extract failed: {log.read()}")
 
     return [
         p for p in sorted(out_dir.glob("*.jpg")) if start_frame <= int(p.stem) <= end_frame

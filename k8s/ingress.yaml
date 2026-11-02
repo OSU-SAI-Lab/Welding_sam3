@@ -5,8 +5,17 @@ kind: Ingress
 metadata:
   name: sam3-video-service
   annotations:
-    haproxy-ingress-proxy.timeout: 600s # SSE propagate jobs and large uploads run long
-    haproxy.router.openshift.io/timeout: 600s
+    # This cluster runs jcmoraisjr/haproxy-ingress, which reads annotations
+    # under the haproxy-ingress.github.io/ prefix and ignores every other
+    # spelling. The two previously set here — `haproxy-ingress-proxy.timeout`
+    # and the OpenShift router's `haproxy.router.openshift.io/timeout` — were
+    # silently dropped, so the default server timeout (50s) applied and
+    # /chunks/prepare returned 504 on any chunk that took longer to extract.
+    haproxy-ingress.github.io/timeout-server: 600s # frame extraction and SSE jobs run long
+    haproxy-ingress.github.io/timeout-client: 600s # large video uploads are slow to send
+    haproxy-ingress.github.io/timeout-connect: 30s
+    # Source videos are large; the default cap would reject them outright.
+    haproxy-ingress.github.io/proxy-body-size: 4096m
 spec:
   ingressClassName: haproxy
   tls:

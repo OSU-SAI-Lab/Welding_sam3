@@ -8,6 +8,9 @@ data:
   SAM3_MOCK: "0"
   CHUNK_SIZE: "1000"
   CHUNK_OVERLAP: "50"
+  # Frames a tracking job loads into memory at once. 1000 (+50 overlap)
+  # OOM-killed the service at its 32Gi limit; see TRACK_CHUNK_SIZE in config.py.
+  TRACK_CHUNK_SIZE: "500"
   # The gateway in front of this service owns CORS now, and it is the only
   # caller the SAM3 service ever sees, so this stays closed.
   CORS_ALLOW_ORIGINS: "http://127.0.0.1:8080"

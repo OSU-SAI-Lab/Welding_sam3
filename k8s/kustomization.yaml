@@ -4,8 +4,8 @@ kind: Kustomization
 # NRP assigns you a namespace — set it here rather than per-resource.
 namespace: sailab
 
+# PVCs live in storage/ and are applied once — see storage/kustomization.yaml.
 resources:
-  - pvc.yaml
   - configmap.yaml
   - deployment.yaml
   - service.yaml

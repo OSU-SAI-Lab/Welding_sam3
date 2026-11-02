@@ -33,23 +33,32 @@ kubectl apply -f k8s/secret.yaml
 
 `secret.yaml` is git-ignored — never commit it.
 
-## 4. Apply everything else
+## 4. Create storage (once)
+
+```bash
+kubectl apply -k k8s/storage/
+```
+
+This creates the `sam3-video-data` / `sam3-hf-cache` PVCs (`rook-cephfs`,
+adjust size/class in [storage/pvc.yaml](storage/pvc.yaml) as needed for your
+NRP quota). They are kept out of the main kustomization, so redeploying never
+re-applies them and `kubectl delete -k k8s/` leaves the data in place.
+
+## 5. Apply everything else
 
 ```bash
 kubectl apply -k k8s/
 ```
 
-This creates:
+Run this on every deploy. It creates:
 
-- `sam3-video-data` / `sam3-hf-cache` PVCs (`rook-cephfs`, adjust size/class
-  as needed for your NRP quota)
 - a Deployment requesting `nvidia.com/gpu: 1` with `/health` liveness +
   readiness probes
 - a ClusterIP Service
 - an Ingress on NRP's HAProxy controller (`ingressClassName: haproxy`, TLS
   from NRP's wildcard cert) with a 600s timeout for uploads and tracking jobs
 
-## 5. Verify
+## 6. Verify
 
 ```bash
 kubectl get pods -w

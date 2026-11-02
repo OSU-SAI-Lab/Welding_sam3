@@ -83,6 +83,16 @@ insecure — so if everything returns 401 after deploying, check this first.
 
 ## 4. Deploy
 
+Storage is applied once, on the first deploy only. The PVCs live in their own
+kustomization so that redeploying never touches them, and `kubectl delete -k .`
+tears down the app without taking uploads or the SAM3 weights with it.
+
+```bash
+kubectl apply -k storage/                # first deploy only
+```
+
+Every deploy after that, including the first:
+
 ```bash
 kubectl kustomize .                      # inspect what will be applied
 kubectl apply -k .

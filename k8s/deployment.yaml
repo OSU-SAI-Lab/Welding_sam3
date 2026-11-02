@@ -75,7 +75,7 @@ spec:
         # and refuses requests for uploads or jobs belonging to another user.
         # The SAM3 container below is never published directly.
         - name: auth-gateway
-          image: ghcr.io/icicle-ai/sam3-video-auth-gateway:v0.1.2
+          image: ghcr.io/icicle-ai/sam3-video-auth-gateway:v0.1.9
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -128,7 +128,7 @@ spec:
           # means every reschedule pulls whatever that tag happens to point at —
           # which silently reverted this deployment to a build with no tracking
           # endpoints more than once.
-          image: ghcr.io/icicle-ai/sam3-video-service:v0.1.2
+          image: ghcr.io/icicle-ai/sam3-video-service:v0.1.9
           imagePullPolicy: Always
           ports:
             - containerPort: 2129

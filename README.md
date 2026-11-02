@@ -123,6 +123,8 @@ mkdir -p "$DATA_ROOT"
 | `SAM3_VERSION` | `sam3` | `sam3` or `sam3.1` |
 | `CHUNK_SIZE` | `1000` | Frames per chunk |
 | `CHUNK_OVERLAP` | `50` | Overlap between chunks |
+| `LOG_LEVEL` | `INFO` | Level for the service's and gateway's own logs (`DEBUG`, `INFO`, `WARNING`); libraries stay at `WARNING` |
+| `TRACK_CHUNK_SIZE` | `500` | Max frames a tracking job holds in memory at once (caps `CHUNK_SIZE` for tracking; lower it if the service is OOM-killed) |
 | `VENV_DIR` | `./.venv` | Override venv location for `setup_env.sh` |
 | `CORS_ALLOW_ORIGINS` | `*` | Comma-separated origins allowed to call the API (set to the frontend's URL in production) |
 

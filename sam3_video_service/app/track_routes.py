@@ -4,19 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 
-from app import mask_codec, storage, track_jobs, video_io
+from app import logs, mask_codec, storage, track_jobs, video_io
 from app.schemas import TrackRequest
 from app.video_export import ExportError, render_overlay_video
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _TERMINAL = ("done", "failed", "cancelled")
@@ -58,11 +60,14 @@ def get_frame(upload_id: str, frame_idx: int) -> FileResponse:
 
 
 @router.post("/uploads/{upload_id}/track")
-def start_track(upload_id: str, body: TrackRequest) -> dict[str, Any]:
+def start_track(upload_id: str, body: TrackRequest, request: Request) -> dict[str, Any]:
     _upload_meta(upload_id)
+    context = logs.request_context(request.headers)
     try:
-        job = track_jobs.submit(upload_id, body)
+        job = track_jobs.submit(upload_id, body, **context)
     except ValueError as e:
+        logger.warning("%s track request rejected: %s",
+                       logs.tag(upload=upload_id, pipeline=context["pipeline_id"], user=context["user"]), e)
         raise HTTPException(400, str(e)) from e
     return job.public()
 

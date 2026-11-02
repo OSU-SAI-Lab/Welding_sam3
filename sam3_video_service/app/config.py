@@ -10,6 +10,13 @@ DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/data")).expanduser().resolve()
 
 DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "1000"))
 DEFAULT_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "50"))
+# Ceiling on the frames a tracking job holds in memory at once. Every frame of a
+# window is decoded and preprocessed into host RAM before propagation starts, so
+# peak memory grows with the window: a 1050-frame window (CHUNK_SIZE 1000 plus
+# overlap) OOM-killed the pod at its 32Gi limit. This is separate from
+# CHUNK_SIZE, which is stored per upload and sets the upload's on-disk chunk
+# layout, so lowering it also covers videos uploaded before the change.
+TRACK_CHUNK_SIZE = int(os.environ.get("TRACK_CHUNK_SIZE", "500"))
 
 # Meta native predictor: sam3 or sam3.1 (facebook/sam3* have no Transformers video integration).
 SAM3_VERSION = os.environ.get("SAM3_VERSION", "sam3").strip().lower()

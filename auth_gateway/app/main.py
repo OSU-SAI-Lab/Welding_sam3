@@ -19,7 +19,9 @@ The service itself is unmodified; everything here is additive.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import sys
 import time
 
 import httpx
@@ -41,6 +43,29 @@ from app.config import (
 from app.tapis import TapisAuthError, token_expiry, username_for_token
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_logging() -> None:
+    # Without a handler only WARNING and above from app.* reach the pod log, so
+    # every info line below was being dropped. Timestamped, to line up with the
+    # service container's log.
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%Y-%m-%dT%H:%M:%S%z"
+    ))
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(logging.WARNING)
+    logging.getLogger("app").setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
+
+
+_configure_logging()
+
+# Set on every proxied request after authentication, replacing anything the
+# browser sent, so the service can label its logs with the real user.
+USER_HEADER = "x-auth-user"
+PIPELINE_HEADER = "x-pipeline-id"
+
 app = FastAPI(title="SAM3 Video Service auth gateway", version="0.1.0")
 
 # Paths served by the gateway itself rather than proxied.
@@ -158,6 +183,7 @@ async def create_session(request: Request) -> Response:
     try:
         username = await username_for_token(token)
     except TapisAuthError as e:
+        logger.warning("sign-in refused (origin=%s): %s", origin, e)
         return _json(401, {"detail": str(e)}, origin)
 
     # Never outlive the token this session was minted from: a Tapis token is
@@ -176,6 +202,8 @@ async def create_session(request: Request) -> Response:
         logger.error("could not issue a session: %s", e)
         return _json(500, {"detail": "session signing is not configured on the server"}, origin)
 
+    logger.info("[user=%s pipeline=%s] signed in from %s; session ttl %ds",
+                username, _pipeline(request), origin, ttl)
     response = _json(200, {"username": username, "expires_in": ttl}, origin)
     response.set_cookie(
         SESSION_COOKIE_NAME,
@@ -352,8 +380,26 @@ async def _caller(request: Request) -> str | None:
         return None
     try:
         return await username_for_token(token)
-    except TapisAuthError:
+    except TapisAuthError as e:
+        _log_auth_failure(str(e))
         return None
+
+
+# reason -> last time logged. A browser polling with a dead token would otherwise
+# write the same line every few seconds.
+_auth_failures_logged: dict[str, float] = {}
+
+
+def _log_auth_failure(reason: str) -> None:
+    now = time.time()
+    if now - _auth_failures_logged.get(reason, 0.0) >= 60:
+        _auth_failures_logged[reason] = now
+        logger.warning("request refused with 401, token not accepted: %s", reason)
+
+
+def _pipeline(request: Request) -> str | None:
+    value = re.sub(r"[^A-Za-z0-9_.-]", "", request.headers.get(PIPELINE_HEADER, ""))[:64]
+    return value or None
 
 
 # ---------------------------------------------------------------------------
@@ -391,8 +437,14 @@ def _record_created_resource(path: str, method: str, username: str, body: bytes)
 # Proxy
 # ---------------------------------------------------------------------------
 
-def _forwarded_headers(request: Request) -> dict[str, str]:
-    return {k: v for k, v in request.headers.items() if k.lower() not in HOP_HEADERS}
+def _forwarded_headers(request: Request, username: str | None = None) -> dict[str, str]:
+    headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in HOP_HEADERS and k.lower() != USER_HEADER
+    }
+    if username:
+        headers[USER_HEADER] = username
+    return headers
 
 
 def _response_headers(upstream: httpx.Response, origin: str | None) -> dict[str, str]:
@@ -429,6 +481,8 @@ async def proxy(path: str, request: Request) -> Response:
 
     refusal = _authorize(target, username)
     if refusal:
+        logger.warning("[user=%s pipeline=%s] %s %s refused: %s",
+                       username, _pipeline(request), request.method, target, refusal)
         return _json(403, {"detail": refusal}, origin)
 
     # Create calls have small JSON responses that must be read to record who owns
@@ -439,7 +493,7 @@ async def proxy(path: str, request: Request) -> Response:
     if creates_resource:
         upstream = await _client.request(
             request.method, url,
-            headers=_forwarded_headers(request),
+            headers=_forwarded_headers(request, username),
             content=request.stream(),
         )
         if upstream.status_code < 300:
@@ -452,10 +506,18 @@ async def proxy(path: str, request: Request) -> Response:
 
     upstream_request = _client.build_request(
         request.method, url,
-        headers=_forwarded_headers(request),
+        headers=_forwarded_headers(request, username),
         content=request.stream(),
     )
-    upstream = await _client.send(upstream_request, stream=True)
+    try:
+        upstream = await _client.send(upstream_request, stream=True)
+    except httpx.TransportError as e:
+        # The service container is down or restarting (e.g. after an OOM kill).
+        # Answer with CORS headers so the browser shows this instead of a
+        # generic network failure.
+        logger.error("[user=%s pipeline=%s] %s %s: video service unreachable at %s: %s",
+                     username, _pipeline(request), request.method, target, UPSTREAM_URL, e)
+        return _json(502, {"detail": "The video service is not responding; it may be restarting. Try again shortly."}, origin)
 
     async def body():
         try:

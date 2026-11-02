@@ -12,10 +12,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app import storage
+from app import logs, storage
 from app.chunk_planner import plan_chunks
 from app.config import DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP
 from app import sam3_engine
@@ -42,7 +42,7 @@ def health() -> dict[str, Any]:
 
 
 @router.post("/uploads")
-async def upload_video(file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_video(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     if not file.filename:
         raise HTTPException(400, "filename required")
     upload_id = str(uuid.uuid4())
@@ -51,7 +51,7 @@ async def upload_video(file: UploadFile = File(...)) -> dict[str, Any]:
     try:
         with dest.open("wb") as out:
             shutil.copyfileobj(file.file, out)
-        return _register_upload(upload_id, file.filename, dest)
+        return _register_upload(upload_id, file.filename, dest, logs.request_context(request.headers))
     except OSError as e:
         dest.unlink(missing_ok=True)
         if e.errno == 122:
@@ -63,7 +63,9 @@ async def upload_video(file: UploadFile = File(...)) -> dict[str, Any]:
         raise HTTPException(500, f"Failed to save upload: {e}") from e
 
 
-def _register_upload(upload_id: str, original_filename: str, dest: Path) -> dict[str, Any]:
+def _register_upload(
+    upload_id: str, original_filename: str, dest: Path, context: dict[str, str | None]
+) -> dict[str, Any]:
     try:
         info = video_io.probe_video(dest)
     except video_io.VideoIOError as e:
@@ -83,13 +85,21 @@ def _register_upload(upload_id: str, original_filename: str, dest: Path) -> dict
         "chunk_size": DEFAULT_CHUNK_SIZE,
         "overlap": DEFAULT_OVERLAP,
         "status": "uploaded",
+        # Who and what the upload is for, so a track job can be traced back to it.
+        **context,
     }
     storage.save_upload_meta(upload_id, meta)
+    logger.info(
+        "%s registered %r: %s frames %sx%s @ %s fps, %.1f MB",
+        logs.tag(upload=upload_id, pipeline=context["pipeline_id"], user=context["user"]),
+        original_filename, meta["frame_count"], meta["width"], meta["height"], meta["fps"],
+        dest.stat().st_size / 1e6,
+    )
     return meta
 
 
 @router.post("/uploads/{upload_id}/finalize")
-def finalize_upload(upload_id: str, body: FinalizeUploadRequest) -> dict[str, Any]:
+def finalize_upload(upload_id: str, body: FinalizeUploadRequest, request: Request) -> dict[str, Any]:
     """Register a video already written under DATA_ROOT/uploads/{upload_id}/."""
     dest = storage.source_video_dest(upload_id, body.original_filename)
     if not dest.is_file():
@@ -98,7 +108,7 @@ def finalize_upload(upload_id: str, body: FinalizeUploadRequest) -> dict[str, An
             f"Video not found at {dest}. Upload may still be in progress.",
         )
     try:
-        return _register_upload(upload_id, body.original_filename, dest)
+        return _register_upload(upload_id, body.original_filename, dest, logs.request_context(request.headers))
     except HTTPException:
         raise
     except OSError as e:
@@ -314,6 +324,41 @@ def list_chunks(upload_id: str) -> dict[str, Any]:
     }
 
 
+# Preparing a chunk clears its frame directory and refills it with ffmpeg, so
+# two requests for the same chunk must not overlap: they delete each other's
+# output mid-write. The client can issue a second prepare whenever the first is
+# slow — a retry after a gateway timeout, or a user clicking again — so this is
+# reached in normal use, not only under contention.
+_prepare_locks: dict[tuple[str, int], threading.Lock] = {}
+_prepare_locks_guard = threading.Lock()
+
+
+def _prepare_lock(upload_id: str, chunk_index: int) -> threading.Lock:
+    key = (upload_id, chunk_index)
+    with _prepare_locks_guard:
+        return _prepare_locks.setdefault(key, threading.Lock())
+
+
+def _already_extracted(upload_id: str, chunk_index: int, frames_dir: Path) -> bool:
+    """
+    True when a previous prepare finished this chunk and its frames are intact.
+
+    Extraction is the expensive half of prepare — it decodes the video — and
+    repeating it for a chunk the client has already prepared is pure cost. The
+    recorded frame count is what makes this safe: it is written only after a
+    successful extraction, so an interrupted run leaves no count to match and
+    the chunk is extracted again.
+    """
+    try:
+        meta = storage.load_chunk_meta(upload_id, chunk_index)
+    except Exception:
+        return False
+    expected = meta.get("extracted_frames")
+    if meta.get("status") != "prepared" or not expected:
+        return False
+    return sum(1 for _ in frames_dir.glob("*.jpg")) == expected
+
+
 @router.post("/uploads/{upload_id}/chunks/prepare")
 def prepare_chunk(upload_id: str, body: PrepareChunkRequest) -> dict[str, Any]:
     meta = storage.load_upload_meta(upload_id)
@@ -327,9 +372,12 @@ def prepare_chunk(upload_id: str, body: PrepareChunkRequest) -> dict[str, Any]:
     plan = plans[body.chunk_index]
 
     frames_dir = storage.chunk_frames_dir(upload_id, body.chunk_index)
-    video_io.extract_frames(video_path, frames_dir, plan.process_start, plan.process_end)
-
-    extracted = sorted(frames_dir.glob("*.jpg"))
+    with _prepare_lock(upload_id, body.chunk_index):
+        if _already_extracted(upload_id, body.chunk_index, frames_dir):
+            logger.info("chunk %s/%s already extracted; reusing frames", upload_id, body.chunk_index)
+        else:
+            video_io.extract_frames(video_path, frames_dir, plan.process_start, plan.process_end)
+        extracted = sorted(frames_dir.glob("*.jpg"))
     if not extracted:
         raise HTTPException(400, "ffmpeg extracted no frames — check video format")
     actual_min = int(extracted[0].stem)
@@ -347,6 +395,9 @@ def prepare_chunk(upload_id: str, body: PrepareChunkRequest) -> dict[str, Any]:
         "save_end": save_end,
         "sample_frame": sample,
         "status": "prepared",
+        # Written last, and only on success: _already_extracted trusts this to
+        # decide whether the frames on disk are a complete extraction.
+        "extracted_frames": len(extracted),
     }
     storage.save_chunk_meta(upload_id, body.chunk_index, chunk_meta)
 
